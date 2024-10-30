@@ -9,7 +9,6 @@ from flask_mail import Mail, Message
 import os
 import pandas as pd
 
-
 app = Flask(__name__)
 CORS(app)
 app.secret_key = "b';\x90q\xe6x\x9c!iZxH\xa1\x81P\xe6f'"
@@ -25,7 +24,8 @@ mysql = MySQL(app)
 
 def lock_table():
     cur = mysql.connection.cursor()
-    cur.execute("LOCK TABLES User WRITE")
+    # Lock all tables involved in the operations
+    cur.execute("""LOCK TABLES User WRITE, Email WRITE, Email_Group WRITE, Group_receiver WRITE, Individual_receiver WRITE, RecipientList READ, Memberof READ""")
     return cur
 
 def unlock_table(cur):
@@ -120,8 +120,7 @@ def send_email():
             return 'Email sent successfully!'
         except Exception as e:
             return f'Failed to send email. Error: {str(e)}'
-        
-        
+
 def fetch_recipient_id(recipient_email):
     try:
         cur = mysql.connection.cursor()
@@ -131,7 +130,7 @@ def fetch_recipient_id(recipient_email):
         return recipient_id[0] if recipient_id else None
     except Exception as e:
         return None  
-    
+
 def is_group(email):
     cur = mysql.connection.cursor()
     cur.execute("SELECT Group_id FROM Email_Group WHERE Group_address = %s", (email,))
@@ -142,7 +141,7 @@ def is_group(email):
 def retrieve_group_members(group_address):
     cur = mysql.connection.cursor()
     cur.execute("""SELECT rl.RecipientEmail_id 
-                FROM Email_Group eg 
+                FROM Email_Group eg
                 JOIN Memberof m 
                 ON eg.Group_id = m.Group_id 
                 JOIN RecipientList rl 
@@ -152,7 +151,6 @@ def retrieve_group_members(group_address):
     email_addresses = [member[0] for member in group_members]
     cur.close()
     return email_addresses
-
 
 def get_recipient_name(email):
     cur = mysql.connection.cursor()
@@ -226,26 +224,37 @@ def registration():
 
         hashed_password = generate_password_hash(password)
         app.logger.info('Received POST request to add User: User_name - %s, UserEmail_id - %s, Role - %s, Passwordhash - %s', username, email, role, hashed_password)
-        
-        # cur = mysql.connection.cursor()
+
+        # Open a cursor to the database
         cur = lock_table() 
-        cur.execute("SELECT * FROM User WHERE User_ID = %s FOR UPDATE", (session['user_id'],))
-            
+        
         try:
+            # Check if the email already exists
+            cur.execute("SELECT * FROM User WHERE UserEmail_id = %s", [email])
+            existing_user = cur.fetchone()
+
+            if existing_user:
+                error = 'User with this email already exists.'
+                app.logger.warning('User with email %s already exists.', email)
+                return error  # or render a template with the error
+
+            # If email doesn't exist, insert the new user
             cur.execute("INSERT INTO User(User_name, UserEmail_id, Role, Passwordhash) VALUES (%s, %s, %s, %s)", (username, email, role, hashed_password))
             mysql.connection.commit()
             app.logger.info('User added successfully: User_name - %s, UserEmail_id - %s, Role - %s, Passwordhash - %s', username, email, role, hashed_password)
-            unlock_table(cur) 
+            unlock_table(cur)
             return redirect(url_for('login'))
         except Exception as e:
             mysql.connection.rollback()
-            error = 'Registration failed. User already exists.'
+            error = f'Registration failed. {str(e)}'  # Log the actual error message
             app.logger.error('Error adding User to database: %s', str(e))
             return error
         finally:
             cur.close()
 
     return render_template('registration.html')
+
+
 
 @app.route('/home', methods=['GET', 'POST'])
 def home():
